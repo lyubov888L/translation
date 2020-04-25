@@ -47,7 +47,7 @@ Apple 提供了很多方法来解决这类问题：
 
 让我们回顾一下符号断点是如何工作的：它会计算 `layoutSubviews()` 的调用次数并在单个 run loop 迭代中超过某个临界值时发送一个事件。听起来很简单，对吧？
 
-```
+```swift
 class TrackableView: UIView {
     var counter: Int = 0
  
@@ -70,7 +70,7 @@ class TrackableView: UIView {
 
 让我们开始吧——我们将创建自定义子类，并将原始视图的类更改为新的子类：
 
-```
+```swift
 struct LayoutLoopHunter {
  
     struct RuntimeConstants {
@@ -97,6 +97,7 @@ struct LayoutLoopHunter {
 ```
 
 `objc_allocateClassPair()` 方法的文档告诉我们这个方法何时失败：
+
 > 新类，或者如果无法创建类，则为 Nil （例如，所需名称已被使用）。
 
 这就意味着不能拥有两个同名的类。我们的策略是为单个视图类创建一个单独的运行时类。这就是我们在原始类名前加上前缀来形成新类的名称的原因。
@@ -108,7 +109,7 @@ struct LayoutLoopHunter {
 但是目前，**只有一个方法奏效**。你可以想象属性是存储在分配给类的内存里的东西，然而关联对象则储存在一个完全不同的地方。因为分配给已存在对象的内存是固定的，所以我们在自定义类上新添加的属性将会从其他资源里“窃取”内存。它可能导致意料之外的行为和难以调试的程序崩溃（点击 [这里](https://stackoverflow.com/questions/3346427/object-setclass-to-bigger-class) 查看更多信息）。但是在使用关联对象的情况下，它们将会存储在运行时创建的一个哈希表里，这是完全安全的。
 
 
-```
+```swift
 static var CounterKey = "_counter"
  
 ...
@@ -118,7 +119,7 @@ objc_setAssociatedObject(trackableClass, &RuntimeConstants.CounterKey, 0, .OBJC_
 
 当新的子类被创建时，计数器初值设置为 0。接下来，让我们实现这个新的`layoutSubviews()` 方法，并将它添加到我们的类中：
 
-```
+```swift
 let layoutSubviews: @convention(block) (Any?) -> () = { nullableSelf in
     guard let _self = nullableSelf else { return }
  
@@ -137,7 +138,7 @@ class_addMethod(trackableClass, #selector(originalClass.layoutSubviews), impleme
 
 为了理解上面这段代码实际上在干什么，让我们看一下这个来自 `<objc/runtime.h>` 的结构体：
 
-```
+```swift
 struct objc_method {
     SEL method_name;
     char *method_types;
@@ -152,16 +153,16 @@ struct objc_method {
 
 你可以把 Witness Table（在其他编程语言中，它也被称作方法派发表）想象成一个简单的字典数据结构。那么选择器为键，且实现部分则为对应的值。
 在下面这行代码中:
-```
+```swift
 class_addMethod(trackableClass,#selector(originalClass.layoutSubviews), implementation, "v@:")
-``` 
+```
 我们所做的是给 `layoutSubviews()` 方法对应的键分配新值。    
 
 这个方法直截了当。我们获得这个计数器，使它的计数值加一。如果计数值超过临界值，我们会发送分析事件，其中包含类名和想要的任何数据体。
 
 让我们回顾一下如何对关联对象实现和使用键：
 
-```
+```swift
 static var CounterKey = “_counter”
 ...
  
@@ -170,7 +171,7 @@ objc_setAssociatedObject(trackableClass, &RuntimeConstants.CounterKey, counter+1
 
 为什么我们使用 `var` 来修饰计数器的键这个静态属性并在传递到其他地方时使用引用？答案隐藏在 Swift 语言基础——字符串之中。字符串像其他所有的值类型一样，是按值传递的。那么，当你把它传入这个闭包时，这个字符串将会被复制到一个不同的地址，这会导致在关联对象表中产生一个完全不同的键。`&` 符号总是保证将相同的地址作为键参数的值。你可以尝试以下代码：
 
-```
+```swift
 func printAddress(_ string: UnsafeRawPointer) {
     print("\(string)")
 }
@@ -194,7 +195,7 @@ closure()
 
 为了避免发生一些难以预料的布局行为，我们得调用父类的实现，但这不像平常那样简单明了：
 
-```
+```swift
 let selector = #selector(originalClass.layoutSubviews)
 let originalImpl = class_getMethodImplementation(originalClass, selector)
  
@@ -211,7 +212,7 @@ originalLayoutSubviews(view, selector)
 
 目前为止，让我们看看实现部分：
 
-```
+```swift
 static func setUp(for view: UIView, threshold: Int = 100, onLoop: @escaping () -> ()) {
     // 我们根据功能的前缀和原始类名为新类创建名称
     let classFullName = “\(RuntimeConstants.Prefix)_\(String(describing: view.self))”
@@ -261,7 +262,7 @@ static func setUp(for view: UIView, threshold: Int = 100, onLoop: @escaping () -
 ```
 
 让我们为视图创建模拟布局循环，并为其设置计数器来进行测试：
-```
+```swift
 class ViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -284,7 +285,7 @@ class ViewController: UIViewController {
 
 我们该怎么解决这个问题呢？只需在每次 run loop 迭代时重置计数器。为了做到这一点，我们可以创建一个 [**DispatchWorkItem**](https://www.appcoda.com/grand-central-dispatch/)，它重置计数器，并在主队列上异步传递它。通过这种方式，它会在 run loop 下一次进入主线程时被调用：
 
-```
+```swift
 static var ResetWorkItemKey = “_resetWorkItem”
  
 ...
@@ -302,7 +303,7 @@ objc_setAssociatedObject(view, &RuntimeConstants.ResetWorkItemKey, currentResetW
 
 最终的代码：
 
-```
+```swift
 struct LayoutLoopHunter {
  
     struct RuntimeConstants {
